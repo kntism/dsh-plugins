@@ -2,6 +2,7 @@
   "name": "@local/session-git-branch",
   "version": "1.0.0",
   "private": true,
+  "description": "新建会话时可选 Git 分支，会话中随时看到当前分支",
   "type": "module",
   "exports": {
     ".": "./index.js",
