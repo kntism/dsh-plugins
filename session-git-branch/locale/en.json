@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Git branch",
+    "description": "Shows the Git branch of the session's working directory beside the composer and in the New Session row. Picking another branch moves the session into the working directory that holds it: an existing worktree when there is one, otherwise a new linked worktree under .agents/worktrees. The checked-out branch and every uncommitted file in the project directory are left alone; the branch list is read from the checkout's Git directory without running commands. Switching needs the /session_branch command this bundle installs."
+  }
+}

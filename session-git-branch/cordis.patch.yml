@@ -1,0 +1,3 @@
+- insert:
+    - id: session-git-branch
+      name: '@local/session-git-branch'

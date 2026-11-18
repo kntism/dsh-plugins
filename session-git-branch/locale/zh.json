@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "会话 Git 分支",
+    "description": "在输入框旁和新建会话区域显示会话工作目录所在的 Git 分支。选择另一个分支会把会话切到该分支的检出目录：已有 worktree 时直接进入，没有则在 .agents/worktrees 下新建一个 linked worktree。项目目录当前的检出分支和未提交改动不受影响；分支列表直接读取检出目录的 Git 目录，不执行命令。切换依赖本插件安装的 /session_branch 命令。"
+  }
+}
