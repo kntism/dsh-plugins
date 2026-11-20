@@ -260,10 +260,13 @@ window.__ModuleLoader__.load({
       if (result.value === undefined) return { ok: false, missingCommand: true }
       if (result.value.result.kind === 'error') return { ok: false, message: result.value.result.text }
       let created = false
+      let path
       try {
-        created = JSON.parse(result.value.result.text ?? '{}').created === true
+        const payload = JSON.parse(result.value.result.text ?? '{}')
+        created = payload.created === true
+        if (typeof payload.path === 'string' && payload.path.length > 0) path = payload.path
       } catch { created = false }
-      return { ok: true, created }
+      return { ok: true, created, path }
     }
 
     /**
@@ -289,6 +292,9 @@ window.__ModuleLoader__.load({
       const trigger = React.useRef(null)
       const alive = React.useRef(true)
       const switching = React.useRef(null)
+      // Every read carries a sequence number: a read that started earlier must not
+      // overwrite the result of a newer one, whichever settles last.
+      const readSequence = React.useRef(0)
 
       React.useEffect(() => () => {
         alive.current = false
@@ -296,11 +302,18 @@ window.__ModuleLoader__.load({
         if (switching.current !== null) switching.current.abort(new Error('this branch control was removed'))
       }, [])
 
-      const load = React.useCallback(async signal => {
-        if (directory === null || directory === undefined) return
+      /**
+       * Read one checkout's branch and publish it, unless a newer read replaced it.
+       * @param signal - cancellation of this read.
+       * @param target - checkout to read; defaults to the Session's directory.
+       */
+      const load = React.useCallback(async (signal, target = directory) => {
+        if (target === null || target === undefined) return
+        const sequence = ++readSequence.current
+        const current = () => alive.current && !signal.aborted && sequence === readSequence.current
         try {
-          const read = await readBranches(remote, sessionId, directory, signal)
-          if (!alive.current || signal.aborted) return
+          const read = await readBranches(remote, sessionId, target, signal)
+          if (!current()) return
           if (read === null) setState({ current: null, branches: [], status: 'no-git', partial: false })
           else {
             setState({ current: read.current, branches: read.branches, status: 'ready', partial: read.partial })
@@ -308,7 +321,7 @@ window.__ModuleLoader__.load({
             setFailure(null)
           }
         } catch (error) {
-          if (!alive.current || signal.aborted) return
+          if (!current()) return
           setState({ current: null, branches: [], status: 'error', partial: false })
           setFailure(translate('readFailed'))
         }
@@ -371,9 +384,16 @@ window.__ModuleLoader__.load({
           }
           setOpen(false)
           setQuery('')
+          // Drop every read still in flight: each describes the checkout this
+          // Session just left and must not paint the old branch back.
+          readSequence.current += 1
           setState(previous => ({ ...previous, current: name, status: 'ready' }))
           if (outcome.created) setNotice(translate('created', { branch: name }))
-          await load(new AbortController().signal)
+          // Confirm against the checkout the command reports, never the one we
+          // started from: a switch moves the Session's directory and leaves the
+          // original checkout's HEAD alone, so re-reading that directory would
+          // always answer "still on the old branch".
+          if (outcome.path !== undefined) await load(new AbortController().signal, outcome.path)
         } catch (error) {
           if (alive.current && !controller.signal.aborted) {
             setFailure(translate('failed', { message: String(error) }))

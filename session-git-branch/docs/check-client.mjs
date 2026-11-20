@@ -31,7 +31,12 @@ const React = {
 }
 
 let plugin = null
+// The control registers window and document listeners while a menu is open;
+// this harness never dispatches those events, so it only needs the registration
+// points to exist.
 globalThis.window = {
+  addEventListener: () => {},
+  removeEventListener: () => {},
   __ModuleLoader__: {
     load: ({ factory }) => {
       plugin = factory((specifier) => {
@@ -40,6 +45,11 @@ globalThis.window = {
       })
     },
   },
+}
+globalThis.document = {
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  getElementById: () => null,
 }
 eval(readFileSync(new URL('../client.js', import.meta.url), 'utf8'))
 assert.ok(plugin !== null, 'client.js registered no factory')
@@ -225,6 +235,20 @@ function mount(Component, props) {
     return hooks[slot]
   }
 
+  // Identity only changes when a dependency changes, as React does. A fresh
+  // function every render would re-run every effect that depends on one.
+  function useCallback(fn, deps) {
+    const slot = index
+    const previous = hooks[slot]
+    const same = previous !== undefined && deps !== undefined && previous.deps !== undefined
+      && deps.length === previous.deps.length
+      && deps.every((value, at) => Object.is(value, previous.deps[at]))
+    index += 1
+    if (same) return previous.fn
+    hooks[slot] = { fn, deps }
+    return fn
+  }
+
   function render() {
     index = 0
     // The bundle calls hooks through the React object it was handed, so the
@@ -233,8 +257,7 @@ function mount(Component, props) {
     React.useState = useState
     React.useEffect = useEffect
     React.useRef = useRef
-    // useCallback is a memoization detail; identity changes are harmless here.
-    React.useCallback = fn => fn
+    React.useCallback = useCallback
     try {
       tree = Component(props)
       // The registered entry is a thin wrapper around the real control; expand
@@ -387,7 +410,7 @@ await check('switches through the 4-argument command contract and reports a crea
   }))
   const controller = new AbortController()
   const outcome = await switchBranch(recorder.remote, 'check-session', 'feature/packed', controller.signal)
-  assert.deepEqual(outcome, { ok: true, created: true })
+  assert.deepEqual(outcome, { ok: true, created: true, path: '/tmp/x' })
   assert.equal(recorder.calls.length, 1)
   const [sessionId, line, attachments, signalArg] = recorder.calls[0]
   assert.equal(sessionId, 'check-session')
@@ -455,6 +478,67 @@ await check('renders nothing outside a Git checkout', async () => {
   await harness.flush()
   assert.equal(harness.tree, null, 'a non-repository directory rendered a branch control')
   harness.unmount()
+})
+
+await check('after a switch the badge keeps the new branch and the old checkout is not re-read', async () => {
+  const Control = seats.get('conversation.input.left')
+  const reads = []
+  const scopedFiles = {
+    readBytes: (sessionId, path, ...rest) => { reads.push(path); return files.readBytes(sessionId, path, ...rest) },
+    list: (sessionId, path, ...rest) => { reads.push(path); return files.list(sessionId, path, ...rest) },
+  }
+  const recorder = commandRecorder(() => ({
+    ok: true,
+    value: {
+      commandId: 'cmd-switch',
+      result: {
+        kind: 'success',
+        text: JSON.stringify({ action: 'enter', branch: 'feature/worktree', path: worktree, created: false }),
+      },
+    },
+  }))
+  const savedFiles = remote.workspaceFiles
+  const savedCommands = remote.commands
+  remote.workspaceFiles = scopedFiles
+  remote.commands = recorder.remote.commands
+  // The Session's directory moves on the Host, so the projection follows here.
+  let directory = project
+  const harness = mount(Control, {
+    sessionId: 'check-session',
+    useProjection: key => (key === 'workingDirectory' ? directory : undefined),
+  })
+  const settle = async () => { for (let turn = 0; turn < 8; turn += 1) await new Promise(resolve => setTimeout(resolve, 0)) }
+  try {
+    await harness.flush()
+    const trigger = elementsOf(harness.tree, 'button')[0]
+    assert.ok(trigger !== undefined, 'the control rendered no trigger to open the menu')
+    trigger.props.onClick()
+    await harness.flush()
+    const option = elementsOf(harness.tree, 'button')
+      .find(button => button.props.role === 'option' && button.props.title === 'feature/worktree')
+    assert.ok(option !== undefined, 'the menu did not offer the worktree branch')
+    reads.length = 0
+    option.props.onClick()
+    await settle()
+    directory = worktree
+    for (let turn = 0; turn < 3; turn += 1) {
+      await settle()
+      await harness.flush()
+    }
+    const text = textOf(harness.tree)
+    assert.ok(text.includes('feature/worktree'), `the badge did not show the new branch: ${JSON.stringify(text)}`)
+    // The plugin moves the directory and leaves the original checkout's HEAD
+    // alone, so reading that HEAD again could only report the branch just left.
+    // A linked worktree shares packed-refs and refs/heads with it, so HEAD is the
+    // one file that tells the two checkouts apart.
+    const leftHead = join(project, '.git/HEAD')
+    const stale = reads.filter(path => path === leftHead)
+    assert.deepEqual(stale, [], `the control re-read the left checkout's HEAD ${stale.length} time(s)`)
+  } finally {
+    remote.workspaceFiles = savedFiles
+    remote.commands = savedCommands
+    harness.unmount()
+  }
 })
 
 await check('the New Session seat labels the control as a starting branch', async () => {
